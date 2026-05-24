@@ -1,0 +1,79 @@
+"""Allow memory evaluation report objects in objects type check.
+
+Revision ID: 0028_memory_eval_report
+Revises: 0027_refresh_object_types
+Create Date: 2026-03-11 18:10:00.000000
+
+"""
+
+from __future__ import annotations
+
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+# revision identifiers, used by Alembic.
+revision: str = "0028_memory_eval_report"
+down_revision: Union[str, None] = "0027_refresh_object_types"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+PREV_ALLOWED = (
+    "player,npc,zone,item,faction,quest,claim,world_constitution,"
+    "__world_prompt_chunk,__memory_event,__memory_fact,__memory_bundle,"
+    "__story_obligation,__memory_conflict_edge,__memory_review_report,"
+    "__session_summary,__narrative_spine,__entity_memory,__callback_memory"
+)
+NEW_ALLOWED = (
+    "player,npc,zone,item,faction,quest,claim,world_constitution,"
+    "__world_prompt_chunk,__memory_event,__memory_fact,__memory_bundle,"
+    "__story_obligation,__memory_conflict_edge,__memory_review_report,"
+    "__memory_evaluation_report,__session_summary,__narrative_spine,"
+    "__entity_memory,__callback_memory"
+)
+
+
+def _collect_legacy_types(bind: sa.engine.Connection, base_allowed: list[str]) -> list[str]:
+    known = set(base_allowed)
+    rows = bind.execute(sa.text("SELECT DISTINCT type FROM objects WHERE type IS NOT NULL")).all()
+
+    legacy: list[str] = []
+    for (raw_value,) in rows:
+        if not isinstance(raw_value, str):
+            continue
+        candidate = raw_value.strip()
+        if not candidate or candidate in known or candidate in legacy:
+            continue
+        legacy.append(candidate)
+    legacy.sort()
+    return legacy
+
+
+def _constraint_sql_from_values(values: list[str]) -> str:
+    escaped = ",".join("'" + item.replace("'", "''") + "'" for item in values)
+    return f"CHECK (type IN ({escaped}))"
+
+
+def _apply_constraint(values_csv: str) -> None:
+    bind = op.get_bind()
+    base_allowed = [item for item in values_csv.split(",") if item]
+    legacy_allowed = _collect_legacy_types(bind, base_allowed)
+    effective_allowed = [*base_allowed, *legacy_allowed]
+
+    op.execute("ALTER TABLE objects DROP CONSTRAINT IF EXISTS ck_objects_type_allowed")
+    op.execute(
+        f"""
+        ALTER TABLE objects ADD CONSTRAINT ck_objects_type_allowed
+        {_constraint_sql_from_values(effective_allowed)}
+        """
+    )
+
+
+def upgrade() -> None:
+    _apply_constraint(NEW_ALLOWED)
+
+
+def downgrade() -> None:
+    _apply_constraint(PREV_ALLOWED)
